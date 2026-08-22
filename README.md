@@ -204,13 +204,15 @@ On **Intel Pentium P6200 @ 2.13 GHz** (2010) with `-O3`:
 | **Concatenation (1 char, 100k iterations)** | 244,000 ops/s | 175,000,000 ops/s | 36,700,000 ops/s |
 | **Mass allocation (10M strings)** | 40,000,000 ops/s | 50,500,000 ops/s | 15,400,000 ops/s |
 | **Copy / clone** | 23,000,000 ops/s | 25,000,000 ops/s | 22,600,000 ops/s |
-| **Memory fragmentation risk** | Low (exact fit) | Medium (geometric growth) | Low (exact fit) |
-| **C++/C compatibility** | C only | C++ only | C only |
+| **Memory fragmentation risk** | Low (exact fit) | Medium (geometric growth) | Medium (geometric growth) |
+| **C++/C compatibility** | Yes | C++ only | Yes |
 | **Header-only** | ✅ Yes | ✅ Yes (STL) | ❌ No (requires `sds.c`) |
 | **Dependencies** | None (aside of libc) | None (aside of STL) | `sys/types.h` |
+
 *All benchmarks measured on Intel Pentium P6200 @ 2.13 GHz, GCC 15.2.0 `-O3`. `std::string` concat uses `reserve()` to avoid reallocations; `dstring` and SDS use exact allocation.*
 
 *You can run the tests for dstring.h on your own: they are provided in the 'tests/' directory, and can be launched by running 'python build.py'.*
+
 **Make sure you have at least 2+ GB of free RAM before launching the stress test!**
 ---
 
@@ -222,7 +224,7 @@ On **Intel Pentium P6200 @ 2.13 GHz** (2010) with `-O3`:
 | Windows (MinGW/MSVC) | ✅ Full |
 | macOS | ✅ Full |
 | ARM / ARM64 | ✅ Full |
-| AVR / ESP32 | ✅ With constraints |
+| AVR / ESP32 | ✅ Full |
 
 Compiles with:
 - GCC 4.8+

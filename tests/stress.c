@@ -38,7 +38,7 @@
 
 // Defining the arena for all devices
 #if defined(__arm__) || defined(__aarch64__)
-    // ARM-устройства (Raspberry Pi, Android, iOS)
+    // ARM-devices (Raspberry Pi, Android, iOS)
     #define ARENA_SIZE (512UL * 1024 * 1024) // 512 MB
 #else
     // x86_64 / x86 - going all out
@@ -47,10 +47,10 @@
 
 // Main tests
 void bench_stress_alloc(void) {
-    printf("\nConsequent string allocation untill the arena is full\n");
-    printf("   String size: %zu bites\n", sizeof(string));
+    printf("\nConsequent string allocation until the arena is full\n");
+    printf("   String size: %zu bytes\n", sizeof(dstring));
     printf("   Arena size: %zu MB\n", ARENA_SIZE / (1024 * 1024));
-    printf("   Strings max: ~%zu\n", ARENA_SIZE / sizeof(string));
+    printf("   Strings max: ~%zu\n", ARENA_SIZE / sizeof(dstring));
 
     void* arena = malloc(ARENA_SIZE);
     if (arena == NULL) {
@@ -59,41 +59,41 @@ void bench_stress_alloc(void) {
     }
     printf("   Arena has been allocated\n");
 
-    string* strings = (string*)arena;
+    dstring* strings = (dstring*)arena;
     uint64_t count = 0;
     double start = time_sec();
 
     const char* samples[] = {"Hello", "World!!!", "Pikachu, I choose you!"};
     int sample_count = sizeof(samples) / sizeof(samples[0]);
 
-    while (count < ARENA_SIZE / sizeof(string) - 1) {
+    while (count < ARENA_SIZE / sizeof(dstring) - 1) {
         int idx = count % sample_count;
-        strings[count] = initstr(samples[idx]);
-        if (!strok(&strings[count])) break;
+        strings[count] = ds_init(samples[idx]);
+        if (!ds_ok(&strings[count])) break;
         count++;
     }
 
     double elapsed = time_sec() - start;
     printf("   Strings created: %llu\n", (unsigned long long)count);
     printf("   Time: %.3f sec\n", elapsed);
-    printf("   Speed: %.0f string per sec\n", count / elapsed);
+    printf("   Speed: %.0f strings per sec\n", count / elapsed);
 
     // Free
     for (uint64_t i = 0; i < count; i++) {
-        freestr(&strings[i]);
+        ds_free(&strings[i]);
     }
     free(arena);
     printf("   Arena has been freed\n");
 }
 
-// 1 milloin (by default) strings (for all systems)
+// 1 million (by default) strings (for all systems)
 void bench_1m_strings(void) {
     printf("\nTest: %d strings (short & long)\n", STRINGS_INIT);
 
     const char* short_str = "Hello";
     const char* long_str = "This is a long string for testing heap allocation.";
 
-    string* strings = (string*)malloc(STRINGS_INIT * sizeof(string));
+    dstring* strings = (dstring*)malloc(STRINGS_INIT * sizeof(dstring));
     if (strings == NULL) {
         printf("   Failed to allocate memory\n");
         return;
@@ -101,9 +101,9 @@ void bench_1m_strings(void) {
 
     double start = time_sec();
     for (int i = 0; i < STRINGS_INIT; i++) {
-        strings[i] = (i % 2 == 0) ? initstr(short_str) : initstr(long_str);
-        if (!strok(&strings[i])) {
-            printf("   Error at the string №%d\n", i);
+        strings[i] = (i % 2 == 0) ? ds_init(short_str) : ds_init(long_str);
+        if (!ds_ok(&strings[i])) {
+            printf("   Error at string №%d\n", i);
             break;
         }
     }
@@ -115,7 +115,7 @@ void bench_1m_strings(void) {
     // Free
     start = time_sec();
     for (int i = 0; i < 1000000; i++) {
-        freestr(&strings[i]);
+        ds_free(&strings[i]);
     }
     elapsed = time_sec() - start;
     printf("   Freed: %.3f sec\n", elapsed);
@@ -127,29 +127,29 @@ void bench_1m_strings(void) {
 void bench_concat_stress(void) {
     printf("\nConcatenation in a cycle of %d iterations\n", CONCAT_ITERS);
 
-    string s = initstr("");
+    dstring s = ds_init("");
     double start = time_sec();
 
     for (int i = 0; i < CONCAT_ITERS; i++) {
-        string tmp = strpush(&s, 'A' + (i % 26));
-        freestr(&s);
+        dstring tmp = ds_push(&s, 'A' + (i % 26));
+        ds_free(&s);
         s = tmp;
-        if (!strok(&s)) {
-            printf("   Error on the iteration №%d\n", i);
+        if (!ds_ok(&s)) {
+            printf("   Error on iteration №%d\n", i);
             break;
         }
     }
 
     double elapsed = time_sec() - start;
-    printf("   String's length: %u\n", strlen_s(&s));
+    printf("   String length: %u\n", ds_len(&s));
     printf("   Time: %.3f sec\n", elapsed);
-    printf("   Speed: %.0f opers per sec\n", 100000.0 / elapsed);
+    printf("   Speed: %.0f operations per sec\n", 100000.0 / elapsed);
 
-    freestr(&s);
+    ds_free(&s);
 }
 
 int main(void) {
-    printf("Stress-test of the module dstring.h\n");
+    printf("Stress-test of the dstring.h module\n");
     printf("   Platform: ");
 
     #if defined(_WIN64)

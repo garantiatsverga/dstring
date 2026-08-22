@@ -10,214 +10,237 @@
 
 // === SSO Configuration ===
 #define STR_SSO_MAX    14               // Max inline chars (14)
-#define STR_SSO_FLAG   0x80
-#define STR_SSO_LEN_MASK 0x7F
+#define STR_MODE_SSO   0x80             // High bit of mode byte
+#define STR_LEN_MASK   0x3F             // Lower 6 bits for length (max 63)
 
 typedef struct {
     union {
-        // Heap mode (long strings)
+        // Heap mode (long strings) - 16 bytes on 64-bit
         struct {
-            char* ptr;
-            uint32_t len;
-            uint32_t capacity;
-        };
-        // SSO mode (short strings, <= 14 chars)
+            char* ptr;          // 8 bytes
+            uint32_t len;       // 4 bytes
+            uint32_t capacity;  // 4 bytes
+        } heap;
+        
+        // SSO mode (short strings) - 16 bytes
         struct {
-            char small[STR_SSO_MAX + 1];  // 15 bytes: 14 chars + '\0'
-            uint8_t sso_len;              // 1 byte: flag | length (0..14)
-        };
+            char small[15];     // 15 bytes: 14 chars + '\0'
+            uint8_t meta;       // 1 byte: mode | length
+        } sso;
+        
+        // Raw access for safe type-punning
+        uint8_t raw[16];
     };
-} string;  // 16 bytes total
+} dstring;  // Exactly 16 bytes
 
-#define STR_INIT { .small = {0}, .sso_len = 0 }
+#define DS_INIT { .raw = {0} }
 
-// === Basic functions ===
+// === Mode Detection (UB-free) ===
 
-static inline bool is_sso(const string* s) {
-    return s != NULL && (s->sso_len & STR_SSO_FLAG) != 0;
+static inline uint8_t ds_mode(const dstring* s) {
+    if (s == NULL) return 0;
+    // Read the last byte (metadata byte in SSO, or last byte of capacity in heap)
+    return s->raw[15];
 }
 
-static inline bool strok(const string* s) {
-    return s != NULL && s->sso_len != 0xFF;
+static inline bool ds_is_sso(const dstring* s) {
+    if (s == NULL) return false;
+    uint8_t meta = ds_mode(s);
+    // SSO if high bit is set and length field is valid
+    return (meta & STR_MODE_SSO) && 
+           ((meta & STR_LEN_MASK) <= STR_SSO_MAX);
 }
 
-static inline const char* strdata(const string* s) {
-    if (s == NULL || !strok(s)) return "";
-    if (is_sso(s)) {
-        return s->small;
-    } else {
-        return s->ptr ? s->ptr : "";
+static inline bool ds_is_heap(const dstring* s) {
+    if (s == NULL) return false;
+    uint8_t meta = ds_mode(s);
+    // Heap mode if high bit is clear (capacity's high byte won't have bit 7 set
+    // unless capacity > 2^31, which we prevent)
+    return !(meta & STR_MODE_SSO) && s->heap.ptr != NULL;
+}
+
+static inline bool ds_ok(const dstring* s) {
+    if (s == NULL) return false;
+    if (ds_is_sso(s)) {
+        return (s->sso.meta & STR_LEN_MASK) <= STR_SSO_MAX;
     }
-}
-
-static inline uint32_t strlen_s(const string* s) {
-    if (s == NULL || !strok(s)) return 0;
-    if (is_sso(s)) {
-        return s->sso_len & STR_SSO_LEN_MASK;
-    } else {
-        return s->len;
+    if (ds_is_heap(s)) {
+        return s->heap.ptr != NULL && 
+               s->heap.len > STR_SSO_MAX && 
+               s->heap.capacity >= s->heap.len &&
+               s->heap.capacity < (1U << 31);  // Ensure high bit of capacity is clear
     }
+    return false;
 }
 
-static inline bool strempty(const string* s) {
-    return s == NULL || strlen_s(s) == 0;
+// === Core Functions ===
+
+static inline const char* ds_data(const dstring* s) {
+    if (s == NULL || !ds_ok(s)) return "";
+    return ds_is_sso(s) ? s->sso.small : (s->heap.ptr ? s->heap.ptr : "");
 }
 
-static inline uint32_t strhash(const string* s) {
-    if (s == NULL || !strok(s)) return 0;
+static inline uint32_t ds_len(const dstring* s) {
+    if (s == NULL || !ds_ok(s)) return 0;
+    return ds_is_sso(s) ? (s->sso.meta & STR_LEN_MASK) : s->heap.len;
+}
 
-    const char* data = strdata(s);
-    uint32_t len = strlen_s(s);
+static inline bool ds_empty(const dstring* s) {
+    return s == NULL || ds_len(s) == 0;
+}
 
-    uintptr_t data_ptr = (uintptr_t)data;
-    uintptr_t len_ptr = (uintptr_t)(is_sso(s) ?
-        (const void*)&s->sso_len :
-        (const void*)&s->len);
-
-    uint32_t hash = (uint32_t)(data_ptr ^ len_ptr ^ (uintptr_t)len);
-
-    if (len >= 2) {
-        hash ^= (uint8_t)data[0] | ((uint8_t)data[1] << 8);
-    } else if (len == 1) {
-        hash ^= (uint8_t)data[0];
+static inline uint32_t ds_hash(const dstring* s) {
+    if (s == NULL || !ds_ok(s)) return 0;
+    
+    const char* data = ds_data(s);
+    uint32_t len = ds_len(s);
+    
+    // FNV-1a hash
+    uint32_t hash = 2166136261u;
+    for (uint32_t i = 0; i < len; i++) {
+        hash ^= (uint8_t)data[i];
+        hash *= 16777619u;
     }
-
-    hash ^= hash >> 16;
-    hash *= 0x9e3779b9;
-    hash ^= hash >> 16;
-
     return hash;
 }
 
 // === Initialization ===
 
-static inline string initstr_len(const char* str, uint32_t len) {
-    string s = STR_INIT;
-
-    if (str == NULL || len == 0) return s;
-
-    // Проверка переполнения (uint32_t не может превысить SIZE_MAX на 64-bit)
-    if (len >= UINT_MAX) {
-        s.sso_len = 0xFF;
+static inline dstring ds_init_len(const char* str, uint32_t len) {
+    dstring s = DS_INIT;
+    
+    if (str == NULL || len == 0) {
+        // Empty string in SSO mode
+        s.sso.meta = STR_MODE_SSO | 0;
         return s;
     }
-
+    
+    // Prevent capacity from exceeding 2^31 (keeps high byte clear)
+    if (len >= (1U << 31)) {
+        // Too large - return invalid string
+        s.raw[15] = 0xFF;  // Invalid marker
+        return s;
+    }
+    
     if (len <= STR_SSO_MAX) {
-        // SSO mode: 14 chars max
-        memcpy(s.small, str, len);
-        s.small[len] = '\0';
-        s.sso_len = STR_SSO_FLAG | (uint8_t)len;
+        // SSO mode
+        memcpy(s.sso.small, str, len);
+        s.sso.small[len] = '\0';
+        s.sso.meta = STR_MODE_SSO | (uint8_t)len;
     } else {
         // Heap mode
-        s.ptr = (char*)malloc(len + 1);
-        if (s.ptr == NULL) {
-            s.sso_len = 0xFF;
+        s.heap.ptr = (char*)malloc(len + 1);
+        if (s.heap.ptr == NULL) {
+            s.raw[15] = 0xFF;  // Invalid marker
             return s;
         }
-        memcpy(s.ptr, str, len);
-        s.ptr[len] = '\0';
-        s.len = len;
-        s.capacity = len;
+        memcpy(s.heap.ptr, str, len);
+        s.heap.ptr[len] = '\0';
+        s.heap.len = len;
+        s.heap.capacity = len;  // High byte will be 0 for len < 2^31
     }
     return s;
 }
 
-static inline string initstr(const char* str) {
-    if (str == NULL) return (string)STR_INIT;
-    return initstr_len(str, (uint32_t)strlen(str));
+static inline dstring ds_init(const char* str) {
+    if (str == NULL) return (dstring)DS_INIT;
+    return ds_init_len(str, (uint32_t)strlen(str));
 }
 
 // === Free ===
 
-static inline void freestr(string* s) {
+static inline void ds_free(dstring* s) {
     if (s == NULL) return;
-    if (!is_sso(s) && s->ptr) {
-        free(s->ptr);
-        s->ptr = NULL;
+    if (ds_is_heap(s) && s->heap.ptr) {
+        free(s->heap.ptr);
     }
-    memset(s, 0, sizeof(string));
+    memset(s, 0, sizeof(dstring));
 }
 
 // === Concatenation ===
 
-static inline bool prepcat(const string* in1, const string* in2) {
-    if (!in1 || !in2 || !strok(in1) || !strok(in2)) return false;
-    uint64_t total = (uint64_t)strlen_s(in1) + strlen_s(in2) + 1;
-    return total <= UINT_MAX;
+static inline bool ds_cat_ok(const dstring* in1, const dstring* in2) {
+    if (!in1 || !in2 || !ds_ok(in1) || !ds_ok(in2)) return false;
+    uint64_t total = (uint64_t)ds_len(in1) + ds_len(in2) + 1;
+    return total <= (1U << 31) - 1;  // Keep high byte clear
 }
 
-static inline string strcat_s(const string* in1, const string* in2) {
-    string out = STR_INIT;
-
-    if (!prepcat(in1, in2)) {
-        out.sso_len = 0xFF;
+static inline dstring ds_cat(const dstring* in1, const dstring* in2) {
+    dstring out = DS_INIT;
+    
+    if (!ds_cat_ok(in1, in2)) {
+        out.raw[15] = 0xFF;
         return out;
     }
-
-    uint32_t len1 = strlen_s(in1);
-    uint32_t len2 = strlen_s(in2);
-    const char* data1 = strdata(in1);
-    const char* data2 = strdata(in2);
+    
+    uint32_t len1 = ds_len(in1);
+    uint32_t len2 = ds_len(in2);
+    const char* data1 = ds_data(in1);
+    const char* data2 = ds_data(in2);
     uint32_t total = len1 + len2;
-
+    
     if (total <= STR_SSO_MAX && total > 0) {
-        memcpy(out.small, data1, len1);
-        memcpy(out.small + len1, data2, len2);
-        out.small[total] = '\0';
-        out.sso_len = STR_SSO_FLAG | (uint8_t)total;
+        memcpy(out.sso.small, data1, len1);
+        memcpy(out.sso.small + len1, data2, len2);
+        out.sso.small[total] = '\0';
+        out.sso.meta = STR_MODE_SSO | (uint8_t)total;
         return out;
     }
-
-    out.ptr = (char*)malloc(total + 1);
-    if (out.ptr == NULL) {
-        out.sso_len = 0xFF;
+    
+    out.heap.ptr = (char*)malloc(total + 1);
+    if (out.heap.ptr == NULL) {
+        out.raw[15] = 0xFF;
         return out;
     }
-
-    memcpy(out.ptr, data1, len1);
-    memcpy(out.ptr + len1, data2, len2 + 1);
-
-    out.len = total;
-    out.capacity = total;
-
+    
+    memcpy(out.heap.ptr, data1, len1);
+    memcpy(out.heap.ptr + len1, data2, len2 + 1);
+    
+    out.heap.len = total;
+    out.heap.capacity = total;
+    
     return out;
 }
 
 // === Substring ===
 
-static inline string strsub(const string* s, uint32_t start, uint32_t length) {
-    string out = STR_INIT;
-
-    if (!s || !strok(s)) {
-        out.sso_len = 0xFF;
+static inline dstring ds_sub(const dstring* s, uint32_t start, uint32_t length) {
+    dstring out = DS_INIT;
+    
+    if (!s || !ds_ok(s)) {
+        out.raw[15] = 0xFF;
         return out;
     }
-
-    uint32_t total_len = strlen_s(s);
-    if (start > total_len || length == 0) return out;
+    
+    uint32_t total_len = ds_len(s);
+    if (start > total_len || length == 0) {
+        // Return empty string
+        out.sso.meta = STR_MODE_SSO | 0;
+        return out;
+    }
     if (start + length > total_len) length = total_len - start;
-
-    return initstr_len(strdata(s) + start, length);
+    
+    return ds_init_len(ds_data(s) + start, length);
 }
 
 // === Clone ===
 
-static inline string strclone(const string* s) {
-    if (!s || !strok(s)) return (string)STR_INIT;
-    return initstr_len(strdata(s), strlen_s(s));
+static inline dstring ds_clone(const dstring* s) {
+    if (!s || !ds_ok(s)) return (dstring)DS_INIT;
+    return ds_init_len(ds_data(s), ds_len(s));
 }
 
 // === Comparison ===
 
-static inline int strcmp_s(const string* a, const string* b) {
+static inline int ds_cmp(const dstring* a, const dstring* b) {
     if (a == b) return 0;
     if (!a || !b) return (a ? 1 : -1);
-
-    const char* da = strdata(a);
-    const char* db = strdata(b);
-    uint32_t la = strlen_s(a);
-    uint32_t lb = strlen_s(b);
-
+    
+    const char* da = ds_data(a);
+    const char* db = ds_data(b);
+    uint32_t la = ds_len(a);
+    uint32_t lb = ds_len(b);
+    
     int cmp = memcmp(da, db, (la < lb) ? la : lb);
     if (cmp != 0) return cmp;
     return (la > lb) ? 1 : (la < lb) ? -1 : 0;
@@ -225,42 +248,95 @@ static inline int strcmp_s(const string* a, const string* b) {
 
 // === Push character ===
 
-static inline string strpush(const string* s, char c) {
-    string out = STR_INIT;
-
-    if (!s || !strok(s)) {
-        out.sso_len = 0xFF;
+static inline dstring ds_push(const dstring* s, char c) {
+    dstring out = DS_INIT;
+    
+    if (!s || !ds_ok(s)) {
+        out.raw[15] = 0xFF;
         return out;
     }
-
-    uint32_t old_len = strlen_s(s);
-    if (old_len >= UINT_MAX - 1) {
-        out.sso_len = 0xFF;
+    
+    uint32_t old_len = ds_len(s);
+    if (old_len >= (1U << 31) - 2) {
+        out.raw[15] = 0xFF;
         return out;
     }
-
-    const char* data = strdata(s);
+    
+    const char* data = ds_data(s);
     uint32_t new_len = old_len + 1;
-
+    
     if (new_len <= STR_SSO_MAX) {
-        memcpy(out.small, data, old_len);
-        out.small[old_len] = c;
-        out.small[new_len] = '\0';
-        out.sso_len = STR_SSO_FLAG | (uint8_t)new_len;
+        memcpy(out.sso.small, data, old_len);
+        out.sso.small[old_len] = c;
+        out.sso.small[new_len] = '\0';
+        out.sso.meta = STR_MODE_SSO | (uint8_t)new_len;
     } else {
-        out.ptr = (char*)malloc(new_len + 1);
-        if (out.ptr == NULL) {
-            out.sso_len = 0xFF;
+        out.heap.ptr = (char*)malloc(new_len + 1);
+        if (out.heap.ptr == NULL) {
+            out.raw[15] = 0xFF;
             return out;
         }
-        memcpy(out.ptr, data, old_len);
-        out.ptr[old_len] = c;
-        out.ptr[new_len] = '\0';
-        out.len = new_len;
-        out.capacity = new_len;
+        memcpy(out.heap.ptr, data, old_len);
+        out.heap.ptr[old_len] = c;
+        out.heap.ptr[new_len] = '\0';
+        out.heap.len = new_len;
+        out.heap.capacity = new_len;
     }
-
+    
     return out;
+}
+
+// === Additional Utility Functions ===
+
+// Convert dstring to C string (returns internal buffer, don't free)
+static inline const char* ds_cstr(const dstring* s) {
+    return ds_data(s);
+}
+
+// Check if string contains a character
+static inline bool ds_contains(const dstring* s, char c) {
+    if (!s || !ds_ok(s)) return false;
+    const char* data = ds_data(s);
+    uint32_t len = ds_len(s);
+    for (uint32_t i = 0; i < len; i++) {
+        if (data[i] == c) return true;
+    }
+    return false;
+}
+
+// Find first occurrence of character
+static inline int32_t ds_find(const dstring* s, char c) {
+    if (!s || !ds_ok(s)) return -1;
+    const char* data = ds_data(s);
+    uint32_t len = ds_len(s);
+    for (uint32_t i = 0; i < len; i++) {
+        if (data[i] == c) return (int32_t)i;
+    }
+    return -1;
+}
+
+// Trim whitespace from both ends
+static inline dstring ds_trim(const dstring* s) {
+    if (!s || !ds_ok(s)) return (dstring)DS_INIT;
+    
+    const char* data = ds_data(s);
+    uint32_t len = ds_len(s);
+    uint32_t start = 0;
+    uint32_t end = len;
+    
+    // Trim leading whitespace
+    while (start < end && (data[start] == ' ' || data[start] == '\t' || 
+           data[start] == '\n' || data[start] == '\r')) {
+        start++;
+    }
+    
+    // Trim trailing whitespace
+    while (end > start && (data[end-1] == ' ' || data[end-1] == '\t' || 
+           data[end-1] == '\n' || data[end-1] == '\r')) {
+        end--;
+    }
+    
+    return ds_init_len(data + start, end - start);
 }
 
 #endif // DSTRING_H

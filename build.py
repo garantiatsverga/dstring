@@ -45,25 +45,47 @@ TESTS = {
         "out": "strtest",
         "desc": "Unit tests (10 tests)",
         "timeout": 30,
+        "lang": "c",
     },
     "strbench": {
         "src": "tests/strbench.c",
         "out": "strbench",
-        "desc": "Performance benchmarks",
+        "desc": "Performance benchmarks (C)",
         "timeout": 120,
+        "lang": "c",
+    },
+    "strbench_cpp": {
+        "src": "tests/strbench.cpp",
+        "out": "strbench_cpp",
+        "desc": "Performance benchmarks (C++)",
+        "timeout": 120,
+        "lang": "cpp",
     },
     "stress": {
         "src": "tests/stress.c",
         "out": "stress",
-        "desc": "Stress tests (2GB arena)",
+        "desc": "Stress tests - dstring (2GB arena)",
         "timeout": 300,
+        "lang": "c",
+    },
+    "stress_cpp": {
+        "src": "tests/stress.cpp",
+        "out": "stress_cpp",
+        "desc": "Stress tests - std::string (2GB arena)",
+        "timeout": 300,
+        "lang": "cpp",
     },
 }
 
 # === Utils ===
-def get_compiler():
-    """Detect available C compiler."""
-    for cc in ["gcc-14", "gcc-13", "gcc-12", "gcc-11", "gcc", "clang"]:
+def get_compiler(lang="c"):
+    """Detect available compiler for the specified language."""
+    if lang == "cpp":
+        compilers = ["g++-14", "g++-13", "g++-12", "g++-11", "g++", "clang++"]
+    else:
+        compilers = ["gcc-14", "gcc-13", "gcc-12", "gcc-11", "gcc", "clang"]
+    
+    for cc in compilers:
         try:
             subprocess.run([cc, "--version"], capture_output=True, check=False)
             return cc
@@ -77,7 +99,10 @@ def get_optimization_flags(compiler):
         return ["-O3"]
     return ["-O3", "-pipe"]
 
-def get_std_flags():
+def get_std_flags(lang="c"):
+    """Get standard flags based on language."""
+    if lang == "cpp":
+        return ["-std=c++11", "-Wall", "-Wextra", "-Wpedantic", "-Wno-unused-parameter"]
     return ["-std=c11", "-Wall", "-Wextra", "-Wpedantic", "-Wno-unused-parameter"]
 
 def run_command(cmd, cwd=".", timeout=60):
@@ -113,14 +138,22 @@ def build_test(test_name, compiler, cflags, opt_flags):
     test = TESTS[test_name]
     src = test["src"]
     out = test["out"]
+    lang = test.get("lang", "c")
 
     if not os.path.isfile(src):
         print_error(f"Source {src} not found")
         return None
 
-    # FIXED: добавили -D_POSIX_C_SOURCE для clock_gettime
-    cmd = [compiler] + opt_flags + cflags + [
-        "-D_POSIX_C_SOURCE=199309L",
+    # Add POSIX define for clock_gettime (C tests only)
+    extra_flags = []
+    if lang == "c":
+        extra_flags.append("-D_POSIX_C_SOURCE=199309L")
+    
+    # For C++ tests, add _GNU_SOURCE for additional compatibility
+    if lang == "cpp":
+        extra_flags.append("-D_GNU_SOURCE")
+    
+    cmd = [compiler] + opt_flags + cflags + extra_flags + [
         "-o", out, src
     ]
     print_info(f"{' '.join(cmd)}")
@@ -172,7 +205,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="Run all tests (default)")
     parser.add_argument("--test", choices=list(TESTS.keys()), help="Run specific test")
     parser.add_argument("--build-only", action="store_true", help="Only build, don't run")
-    parser.add_argument("--compiler", default=None, help="Specify compiler (gcc, clang, etc.)")
+    parser.add_argument("--compiler", default=None, help="Specify compiler (gcc, clang, g++, clang++)")
     parser.add_argument("--cflags", default="", help="Extra compiler flags")
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     args = parser.parse_args()
@@ -192,23 +225,6 @@ def main():
     # Check dstring.h
     if not check_dstring_header():
         sys.exit(1)
-
-    # Select compiler
-    compiler = args.compiler or get_compiler()
-    if not compiler:
-        print_error("No C compiler found (gcc/clang required)")
-        sys.exit(1)
-    print_success(f"Compiler: {compiler}")
-
-    # Build flags
-    opt_flags = get_optimization_flags(compiler)
-    cflags = get_std_flags()
-
-    if args.cflags:
-        cflags.extend(args.cflags.split())
-
-    print_info(f"CFLAGS: {' '.join(cflags)}")
-    print_info(f"OPT: {' '.join(opt_flags)}")
 
     # Clean
     if args.clean:
@@ -231,7 +247,31 @@ def main():
     # Build
     print_section("Building tests")
     built = []
+    
     for test_name in test_list:
+        test = TESTS[test_name]
+        lang = test.get("lang", "c")
+        
+        # Select compiler based on language
+        if args.compiler:
+            compiler = args.compiler
+        else:
+            compiler = get_compiler(lang)
+        
+        if not compiler:
+            print_error(f"No {'C++' if lang == 'cpp' else 'C'} compiler found")
+            continue
+        
+        # Get language-specific flags
+        cflags = get_std_flags(lang)
+        if args.cflags:
+            cflags.extend(args.cflags.split())
+        opt_flags = get_optimization_flags(compiler)
+        
+        print_info(f"Building {test_name} ({lang.upper()}) with {compiler}")
+        print_info(f"CFLAGS: {' '.join(cflags)}")
+        print_info(f"OPT: {' '.join(opt_flags)}")
+        
         out = build_test(test_name, compiler, cflags, opt_flags)
         if out:
             built.append(test_name)

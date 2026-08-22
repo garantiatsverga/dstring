@@ -75,16 +75,16 @@ void bench_sso_vs_heap(void) {
     // SSO test
     double start = time_sec();
     for (int i = 0; i < BENCH_SSO_ITERATIONS; i++) {
-        string s = initstr(short_str);
-        freestr(&s);
+        dstring s = ds_init(short_str);
+        ds_free(&s);
     }
     double sso_time = time_sec() - start;
     
     // Heap test
     start = time_sec();
     for (int i = 0; i < BENCH_HEAP_ITERATIONS; i++) {
-        string s = initstr(long_str);
-        freestr(&s);
+        dstring s = ds_init(long_str);
+        ds_free(&s);
     }
     double heap_time = time_sec() - start;
     
@@ -93,7 +93,7 @@ void bench_sso_vs_heap(void) {
     printf("  Ratio: SSO is %.1fx faster\n", heap_time / sso_time);
 }
 
-// strlen_s() vs strlen()
+// ds_len() vs strlen()
 void bench_len_comparison(void) {
     printf(COLOR_CYAN "\nLENGTH ACCESS: O(1) vs O(n)\n" COLOR_RESET);
     
@@ -107,18 +107,18 @@ void bench_len_comparison(void) {
     int num_texts = sizeof(texts) / sizeof(texts[0]);
     
     // Create strings once
-    string strings[5];
+    dstring strings[5];
     for (int i = 0; i < num_texts; i++) {
-        strings[i] = initstr(texts[i]);
+        strings[i] = ds_init(texts[i]);
     }
     
-    // strlen_s() test
-    printf("\n  " COLOR_BOLD "strlen_s (O(1)):" COLOR_RESET "\n");
+    // ds_len() test
+    printf("\n  " COLOR_BOLD "ds_len (O(1)):" COLOR_RESET "\n");
     for (int i = 0; i < num_texts; i++) {
         double start = time_sec();
         volatile uint32_t len = 0;
         for (int j = 0; j < BENCH_LEN_ITERATIONS; j++) {
-            len = strlen_s(&strings[i]);
+            len = ds_len(&strings[i]);
         }
         double elapsed = time_sec() - start;
         print_result(texts[i], elapsed, BENCH_LEN_ITERATIONS / elapsed, "PASS");
@@ -127,7 +127,7 @@ void bench_len_comparison(void) {
     // strlen() test
     printf("\n  " COLOR_BOLD "strlen (O(n)):" COLOR_RESET "\n");
     for (int i = 0; i < num_texts; i++) {
-        const char* data = strdata(&strings[i]);
+        const char* data = ds_data(&strings[i]);
         double start = time_sec();
         volatile size_t len = 0;
         for (int j = 0; j < BENCH_LEN_ITERATIONS; j++) {
@@ -139,34 +139,34 @@ void bench_len_comparison(void) {
     
     // Cleanup
     for (int i = 0; i < num_texts; i++) {
-        freestr(&strings[i]);
+        ds_free(&strings[i]);
     }
 }
 
-// strhash() performance
+// ds_hash() performance
 void bench_hash(void) {
     printf(COLOR_CYAN "\nHASH COMPUTATION\n" COLOR_RESET);
     
     const char* texts[] = {"Hello", "World", "dstring", "benchmark", "performance"};
     int num_texts = sizeof(texts) / sizeof(texts[0]);
     
-    string strings[5];
+    dstring strings[5];
     for (int i = 0; i < num_texts; i++) {
-        strings[i] = initstr(texts[i]);
+        strings[i] = ds_init(texts[i]);
     }
     
     for (int i = 0; i < num_texts; i++) {
         double start = time_sec();
         volatile uint32_t hash = 0;
         for (int j = 0; j < BENCH_HASH_ITERATIONS; j++) {
-            hash = strhash(&strings[i]);
+            hash = ds_hash(&strings[i]);
         }
         double elapsed = time_sec() - start;
         print_result(texts[i], elapsed, BENCH_HASH_ITERATIONS / elapsed, "PASS");
     }
     
     for (int i = 0; i < num_texts; i++) {
-        freestr(&strings[i]);
+        ds_free(&strings[i]);
     }
 }
 
@@ -174,26 +174,26 @@ void bench_hash(void) {
 void bench_concat(void) {
     printf(COLOR_CYAN "\nCONCATENATION STRESS\n" COLOR_RESET);
     
-    string s = initstr("");
+    dstring s = ds_init("");
     
     double start = time_sec();
     for (int i = 0; i < BENCH_CONCAT_ITERATIONS; i++) {
         char c = 'A' + (i % 26);
-        string tmp = strpush(&s, c);
-        freestr(&s);
+        dstring tmp = ds_push(&s, c);
+        ds_free(&s);
         s = tmp;
-        if (!strok(&s)) {
+        if (!ds_ok(&s)) {
             print_result("concat loop", 0.0, 0.0, "FAIL");
-            freestr(&s);
+            ds_free(&s);
             return;
         }
     }
     double elapsed = time_sec() - start;
     
-    printf("  Final string length: %u\n", strlen_s(&s));
+    printf("  Final string length: %u\n", ds_len(&s));
     print_result("push operations", elapsed, BENCH_CONCAT_ITERATIONS / elapsed, "PASS");
     
-    freestr(&s);
+    ds_free(&s);
 }
 
 // Massive allocation test
@@ -216,14 +216,14 @@ void bench_mass_alloc(void) {
         return;
     }
     
-    string* strings = (string*)arena;
+    dstring* strings = (dstring*)arena;
     uint64_t count = 0;
     const char* sample = "Test string";
     
     double start = time_sec();
-    while (count < arena_size / sizeof(string) - 1) {
-        strings[count] = initstr(sample);
-        if (!strok(&strings[count])) break;
+    while (count < arena_size / sizeof(dstring) - 1) {
+        strings[count] = ds_init(sample);
+        if (!ds_ok(&strings[count])) break;
         count++;
     }
     double elapsed = time_sec() - start;
@@ -233,7 +233,7 @@ void bench_mass_alloc(void) {
     
     // Cleanup
     for (uint64_t i = 0; i < count; i++) {
-        freestr(&strings[i]);
+        ds_free(&strings[i]);
     }
     free(arena);
 }
@@ -245,27 +245,27 @@ void bench_copy_vs_clone(void) {
     const char* source = "This is a test string for copying";
     
     // Clone test
-    string original = initstr(source);
+    dstring original = ds_init(source);
     double start = time_sec();
     for (int i = 0; i < BENCH_COPY_ITERATIONS; i++) {
-        string copy = strclone(&original);
-        freestr(&copy);
+        dstring copy = ds_clone(&original);
+        ds_free(&copy);
     }
     double clone_time = time_sec() - start;
     
-    // Manual copy test (using initstr_len)
+    // Manual copy test (using ds_init_len)
     start = time_sec();
     for (int i = 0; i < BENCH_COPY_ITERATIONS; i++) {
-        string copy = initstr_len(strdata(&original), strlen_s(&original));
-        freestr(&copy);
+        dstring copy = ds_init_len(ds_data(&original), ds_len(&original));
+        ds_free(&copy);
     }
     double manual_time = time_sec() - start;
     
-    print_result("strclone()", clone_time, BENCH_COPY_ITERATIONS / clone_time, "PASS");
+    print_result("ds_clone()", clone_time, BENCH_COPY_ITERATIONS / clone_time, "PASS");
     print_result("manual copy", manual_time, BENCH_COPY_ITERATIONS / manual_time, "PASS");
-    printf("  Ratio: strclone is %.1fx faster\n", manual_time / clone_time);
+    printf("  Ratio: ds_clone is %.1fx faster\n", manual_time / clone_time);
     
-    freestr(&original);
+    ds_free(&original);
 }
 
 // Main
@@ -295,7 +295,7 @@ int main(void) {
         printf("  Arch: Is unknown, but we work anyway! =D\n");
     #endif
     
-    printf("  String size: %zu bytes\n", sizeof(string));
+    printf("  String size: %zu bytes\n", sizeof(dstring));
     printf("  SSO limit: %d bytes\n", STR_SSO_MAX + 1);
     printf("  Iterations: SSO=%d, Heap=%d, Len=%d, Hash=%d, Concat=%d, Copy=%d\n",
            BENCH_SSO_ITERATIONS, BENCH_HEAP_ITERATIONS, BENCH_LEN_ITERATIONS,
