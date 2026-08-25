@@ -281,26 +281,17 @@ void bench_concat_comparison(void) {
 // ============================================================================
 // TEST 5: Huge string handling
 // ============================================================================
-
 void bench_huge_strings(void) {
     printf(COLOR_CYAN "\n=== TEST 5: HUGE STRING HANDLING ===\n" COLOR_RESET);
     
-    // Create 10 MB string
-    char* huge_data = malloc(HUGE_STRING_SIZE);
-    if (!huge_data) {
-        printf(COLOR_RED "   Failed to allocate source\n" COLOR_RESET);
-        return;
-    }
-    memset(huge_data, 'x', HUGE_STRING_SIZE - 1);
-    huge_data[HUGE_STRING_SIZE - 1] = '\0';
-    
+    // Method 1: Direct fill (like std::string constructor)
     mem_stats before = get_memory_stats();
     double start = time_sec();
-    dstring huge = ds_init(huge_data);
+    dstring huge = ds_init_fill('x', HUGE_STRING_SIZE - 1);
     double elapsed = time_sec() - start;
     mem_stats after = get_memory_stats();
     
-    printf("   Created %u-byte string\n", ds_len(&huge));
+    printf("   Created %u-byte string (direct fill)\n", ds_len(&huge));
     printf("   Time: %.3f sec\n", elapsed);
     printf("   Hash: %u\n", ds_hash(&huge));
     printf("   Memory: Δ %+.2f MB\n", after.rss_used - before.rss_used);
@@ -317,7 +308,50 @@ void bench_huge_strings(void) {
     printf("   Find 'y': %.3f sec (position: %d)\n", elapsed, pos);
     
     ds_free(&huge);
-    free(huge_data);
+    
+    // Method 2: Zero-copy from existing buffer (take ownership)
+    printf("\n   " COLOR_YELLOW "Zero-copy test:" COLOR_RESET "\n");
+    char* huge_data = malloc(HUGE_STRING_SIZE);
+    if (!huge_data) {
+        printf(COLOR_RED "   Failed to allocate source\n" COLOR_RESET);
+        return;
+    }
+    memset(huge_data, 'y', HUGE_STRING_SIZE - 1);
+    huge_data[HUGE_STRING_SIZE - 1] = '\0';
+    
+    before = get_memory_stats();
+    start = time_sec();
+    dstring huge2 = ds_init_take(huge_data, HUGE_STRING_SIZE - 1);
+    elapsed = time_sec() - start;
+    after = get_memory_stats();
+    
+    printf("   Created %u-byte string (zero-copy)\n", ds_len(&huge2));
+    printf("   Time: %.3f sec\n", elapsed);
+    printf("   Memory: Δ %+.2f MB\n", after.rss_used - before.rss_used);
+    
+    // Don't free(huge_data) - ds_init_take took ownership!
+    ds_free(&huge2);
+    
+    // Method 3: From arena (zero-copy)
+    printf("\n   " COLOR_YELLOW "Arena zero-copy test:" COLOR_RESET "\n");
+    before = get_memory_stats();
+    start = time_sec();
+    
+    dstring_arena arena = dsa_create(HUGE_STRING_SIZE);
+    for (int i = 0; i < HUGE_STRING_SIZE - 1; i++) {
+        dsa_push(&arena, 'z');
+    }
+    
+    dstring huge3 = ds_from_arena_take(&arena);
+    elapsed = time_sec() - start;
+    after = get_memory_stats();
+    
+    printf("   Created %u-byte string (from arena)\n", ds_len(&huge3));
+    printf("   Time: %.3f sec\n", elapsed);
+    printf("   Memory: Δ %+.2f MB\n", after.rss_used - before.rss_used);
+    
+    ds_free(&huge3);
+    // Arena is already freed (ds_from_arena_take took ownership)
 }
 
 // ============================================================================
